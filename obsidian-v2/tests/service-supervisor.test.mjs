@@ -215,3 +215,34 @@ test('a stop signal ends the monitor with exit 0 and no paused marker, leaving i
   await until(() => again.snapshot().services[0].phase === 'online', 'adopted after signal');
   assert.equal(f.count(), 1);
 });
+
+test('a second copy exits 0 with one log line when our own monitor holds the lock', async t => {
+  const f = await fixture(t); await f.foreign(); await f.start();
+  const before = events(f).length;
+  const result = await runSupervisor(writeConfig(f, 'config.json', f.config)).done;
+  assert.equal(result.code, 0);
+  assert.match(result.stdout, /already running/);
+  assert.equal(result.stderr, '');
+  const added = events(f).slice(before);
+  assert.equal(added.length, 1); assert.equal(added[0].event, 'already_running');
+  assert.equal(f.count(), 0);
+});
+
+test('a monitor for another runtime directory on the lock port still makes a new copy exit with an error', async t => {
+  const f = await fixture(t); await f.foreign(); await f.start();
+  const otherRuntime = path.join(f.dir, 'must-not-exist');
+  const result = await runSupervisor(writeConfig(f, 'other.json', {...f.config, runtimeDir:otherRuntime})).done;
+  assert.equal(result.code, 1);
+  assert.match(result.stderr, /EADDRINUSE/);
+  assert.equal(fs.existsSync(otherRuntime), false);
+});
+
+test('a stranger on the lock port makes a new copy exit with an error', async t => {
+  const f = await fixture(t);
+  const stranger = http.createServer((req,res) => {res.writeHead(200, {'Content-Type':'application/json'});res.end('{"kind":"something-else"}');});
+  await listen(stranger, f.config.lockPort); f.servers.push(stranger);
+  const result = await runSupervisor(writeConfig(f, 'config.json', f.config)).done;
+  assert.equal(result.code, 1);
+  assert.match(result.stderr, /EADDRINUSE/);
+  assert.equal(fs.existsSync(f.config.runtimeDir), false);
+});
